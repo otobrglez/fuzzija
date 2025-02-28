@@ -9,6 +9,7 @@ pub enum SourceKind {
     Disabled,
     PravneOsebe,
     FizicneOsebe,
+    PoslovniRegisterSlovenije,
 }
 
 type Position = (usize, usize);
@@ -73,7 +74,7 @@ pub static CONFIG: [SourceConfig; 3] = [
     SourceConfig {
         name: "Pravne Osebe",
         kind: SourceKind::PravneOsebe,
-        source_url: "https://fu.gov.si/fileadmin/prenosi/DURS_zavezanci_PO.txt",
+        source_url: "https://fu.gov.si/fileadmin/prenosi/DURS_zavezanci_PO.zip",
         zip_file_path: Some("DURS_zavezanci_PO.txt"),
         data_path: Some("pravne_osebe.zip"),
         index_path: Some("pravne_osebe"),
@@ -97,4 +98,14 @@ pub static CONFIG: [SourceConfig; 3] = [
         index_path: Some("fizicne_osebe_dej"),
         schema: || None,
     },
+    /*
+    SourceConfig {
+        name: "Poslovni Register Slovenije",
+        kind: SourceKind::Disabled,
+        source_url: "https://podatki.gov.si/dataset/poslovni-register-slovenije",
+        zip_file_path: None,
+        data_path: Some("poslovni_register_slovenije.zip"),
+        index_path: Some("poslovni_register_slovenije"),
+        schema: || None,
+    }, */
 ];
