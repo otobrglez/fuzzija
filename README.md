@@ -1,5 +1,5 @@
 # fuzzija
 
-Very fast indexing and search engine in Rust.
+Very fast search engine for public slovenian tax data.
 
 \- Oto Brglez
