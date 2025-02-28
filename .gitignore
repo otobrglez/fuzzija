@@ -1,3 +1,5 @@
+*.zip
+*.txt
 .envrc
 .DS_Store
 .idea/
