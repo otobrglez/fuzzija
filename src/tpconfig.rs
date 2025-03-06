@@ -1,10 +1,11 @@
+use clap::ValueEnum;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 use tantivy::schema::{Field, STORED, STRING, Schema, TEXT};
 
 pub type SourceName = &'static str;
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
 pub enum SourceKind {
     Disabled,
     PravneOsebe,
@@ -12,7 +13,25 @@ pub enum SourceKind {
     PoslovniRegisterSlovenije,
 }
 
-type Position = (usize, usize);
+impl std::fmt::Display for SourceKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let description = match self {
+            SourceKind::Disabled => "Disabled",
+            SourceKind::PravneOsebe => "Pravne Osebe",
+            SourceKind::FizicneOsebe => "Fizične Osebe",
+            SourceKind::PoslovniRegisterSlovenije => "Poslovni Register Slovenije",
+        };
+        write!(f, "{}", description)
+    }
+}
+
+// type Position = (usize, usize);
+
+#[derive(Hash, Debug, Copy, Clone, PartialEq, Eq)]
+pub enum Position {
+    Fixed(usize, usize),
+    Index(usize),
+}
 
 #[derive(Debug)]
 pub struct SourceConfig {
@@ -29,19 +48,19 @@ static PRAVNE_OSEBE_SCHEMA: LazyLock<(Schema, HashSet<(Field, Position)>)> = Laz
     let mut schema_builder = Schema::builder();
     let vat_id = (
         schema_builder.add_text_field("vat_id", STRING | STORED),
-        (4, 12),
+        Position::Fixed(4, 12),
     );
     let company_id = (
         schema_builder.add_text_field("company_id", STRING | STORED),
-        (13, 23),
+        Position::Fixed(13, 23),
     );
     let company_name = (
         schema_builder.add_text_field("company_name", TEXT | STORED),
-        (42, 143),
+        Position::Fixed(42, 143),
     );
     let address = (
         schema_builder.add_text_field("address", TEXT | STORED),
-        (143, 257),
+        Position::Fixed(143, 257),
     );
 
     (
@@ -54,15 +73,15 @@ static FIZICNE_OSEBE_SCHEMA: LazyLock<(Schema, HashSet<(Field, Position)>)> = La
     let mut schema_builder = Schema::builder();
     let vat_id = (
         schema_builder.add_text_field("vat_id", STRING | STORED),
-        (2, 10),
+        Position::Fixed(2, 10),
     );
     let name = (
         schema_builder.add_text_field("name", TEXT | STORED),
-        (11, 72),
+        Position::Fixed(11, 72),
     );
     let address = (
         schema_builder.add_text_field("address", TEXT | STORED),
-        (72, 184),
+        Position::Fixed(72, 184),
     );
     (
         schema_builder.build(),
@@ -70,7 +89,23 @@ static FIZICNE_OSEBE_SCHEMA: LazyLock<(Schema, HashSet<(Field, Position)>)> = La
     )
 });
 
-pub static CONFIG: [SourceConfig; 3] = [
+static PR_SCHEMA: LazyLock<(Schema, HashSet<(Field, Position)>)> = LazyLock::new(|| {
+    let mut schema_builder = Schema::builder();
+    let company_id = (
+        schema_builder.add_text_field("company_id", STRING | STORED),
+        Position::Index(0),
+    );
+    let company_name = (
+        schema_builder.add_text_field("company_name", TEXT | STORED),
+        Position::Index(1),
+    );
+    (
+        schema_builder.build(),
+        HashSet::from([company_id, company_name]),
+    )
+});
+
+pub static CONFIG: [SourceConfig; 4] = [
     SourceConfig {
         name: "Pravne Osebe",
         kind: SourceKind::PravneOsebe,
@@ -98,14 +133,13 @@ pub static CONFIG: [SourceConfig; 3] = [
         index_path: Some("fizicne_osebe_dej"),
         schema: || None,
     },
-    /*
     SourceConfig {
         name: "Poslovni Register Slovenije",
-        kind: SourceKind::Disabled,
+        kind: SourceKind::PoslovniRegisterSlovenije,
         source_url: "https://podatki.gov.si/dataset/poslovni-register-slovenije",
         zip_file_path: None,
         data_path: Some("poslovni_register_slovenije.zip"),
         index_path: Some("poslovni_register_slovenije"),
-        schema: || None,
-    }, */
+        schema: || Some(&PR_SCHEMA),
+    },
 ];

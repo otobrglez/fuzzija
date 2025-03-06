@@ -1,5 +1,7 @@
-use crate::AppConfig;
-use crate::tpconfig::{CONFIG, SourceConfig, SourceKind, SourceName};
+use crate::config::AppConfig;
+use crate::tpconfig::{CONFIG, Position, SourceConfig, SourceKind, SourceName};
+use csv::ReaderBuilder;
+use encoding_rs::WINDOWS_1252;
 use io::Error;
 use log::info;
 use std::collections::HashMap;
@@ -12,7 +14,7 @@ use tantivy::Index;
 use tantivy::directory::MmapDirectory;
 use tantivy::doc;
 
-fn read_file_from_zip(
+fn read_by_name_from_zip(
     zip_path: PathBuf,
     file_path: &str,
 ) -> Result<BufReader<Cursor<Vec<u8>>>, Box<dyn std::error::Error + Send + Sync>> {
@@ -22,6 +24,49 @@ fn read_file_from_zip(
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)?;
     Ok(BufReader::new(Cursor::new(buffer)))
+}
+
+fn read_first_csv_from_zip(
+    zip_path: PathBuf,
+) -> Result<BufReader<Cursor<Vec<u8>>>, Box<dyn std::error::Error + Send + Sync>> {
+    // Open the zip file
+    let zip_file = std::fs::File::open(zip_path)?;
+    let mut archive = zip::ZipArchive::new(zip_file)?;
+
+    // Collect all file names in the archive as owned Strings
+    let file_names = (0..archive.len())
+        .filter_map(|i| archive.by_index(i).ok().map(|file| file.name().to_string()))
+        .collect::<Vec<_>>();
+
+    // Find the first file ending with ".csv"
+    if let Some(first_csv) = file_names.iter().find(|name| name.ends_with(".csv")) {
+        // Load the file and return it as a BufReader with a Vec<u8> buffer
+        let mut file = archive.by_name(first_csv)?;
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)?;
+
+        // let reader = DecodeReaderBytes::new(Cursor::new(buffer), WINDOWS_1252);
+
+        // Ok(BufReader::new(Cursor::new(buffer)))
+        // Decode contents from Windows-1252 to UTF-8
+        let (decoded, _, had_errors) = WINDOWS_1252.decode(&buffer);
+        if had_errors {
+            return Err(Box::new(Error::new(
+                io::ErrorKind::InvalidData,
+                "Failed to decode file with Windows-1252 encoding",
+            )));
+        }
+
+        // Return decoded UTF-8 content as BufReader
+        Ok(BufReader::new(Cursor::new(
+            decoded.into_owned().into_bytes(),
+        )))
+    } else {
+        Err(Box::new(Error::new(
+            io::ErrorKind::NotFound,
+            "No CSV files found in the zip archive",
+        )))
+    }
 }
 
 fn slice_line(input: &String, position: (usize, usize)) -> String {
@@ -44,7 +89,7 @@ fn index_zipped_csv_fixed_positions(
     let (_, fields) = (source_config.schema)().unwrap();
 
     if let Some(zip_file_path) = source_config.zip_file_path {
-        let reader = BufReader::new(read_file_from_zip(path, zip_file_path)?);
+        let reader = BufReader::new(read_by_name_from_zip(path, zip_file_path)?);
 
         let mut index_writer = index.writer(100_000_000)?;
 
@@ -53,7 +98,10 @@ fn index_zipped_csv_fixed_positions(
             if let Ok(line) = line {
                 let mut document = doc! {};
                 for (field, position) in fields {
-                    let value = slice_line(&line, *position);
+                    let Position::Fixed(start, stop) = position else {
+                        panic!()
+                    };
+                    let value = slice_line(&line, (start.clone(), stop.clone()));
                     document.add_field_value(*field, value.deref());
                 }
 
@@ -73,6 +121,39 @@ fn index_zipped_csv_fixed_positions(
     }
 }
 
+fn index_zipped_csv_with_header(
+    source_config: &SourceConfig,
+    index: &Index,
+    path: PathBuf,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    info!("Indexing {}", source_config.name);
+
+    let (_, fields) = (source_config.schema)().unwrap();
+    let reader = read_first_csv_from_zip(path)?;
+    let mut csv_reader = ReaderBuilder::new().has_headers(true).from_reader(reader);
+
+    let mut index_writer = index.writer(100_000_000)?;
+    for (_, result) in csv_reader.records().enumerate() {
+        if let Ok(record) = result {
+            let csv_fields: Vec<String> = record.iter().map(String::from).collect();
+            let mut document = doc! {};
+
+            for (field, position) in fields {
+                let Position::Index(position_index) = position else {
+                    panic!()
+                };
+                let value = csv_fields.get(position_index.clone()).unwrap();
+                document.add_field_value(*field, value.deref());
+            }
+
+            index_writer.add_document(document)?;
+        }
+    }
+    index_writer.commit()?;
+
+    Ok(())
+}
+
 pub async fn index_source(
     source_name: SourceName,
     maybe_index: Option<Index>,
@@ -84,15 +165,15 @@ pub async fn index_source(
         .unwrap();
 
     match (source_config.kind, maybe_index) {
-        (SourceKind::PravneOsebe, Some(index)) => {
+        (SourceKind::PravneOsebe | SourceKind::FizicneOsebe, Some(index)) => {
             index_zipped_csv_fixed_positions(source_config, &index, path)
         }
-        (SourceKind::FizicneOsebe, Some(index)) => {
-            index_zipped_csv_fixed_positions(source_config, &index, path)
+        (SourceKind::PoslovniRegisterSlovenije, Some(index)) => {
+            index_zipped_csv_with_header(source_config, &index, path)
         }
-        _ => Err(Box::new(Error::new(
+        (source_kind, _) => Err(Box::new(Error::new(
             io::ErrorKind::Other,
-            "Functionality not yet implemented",
+            format!("Functionality not yet implemented for {}", source_kind),
         ))),
     }
 }
@@ -100,13 +181,13 @@ pub async fn index_source(
 pub type IndexMap = HashMap<SourceName, Index>;
 pub fn open_or_create_indexes(
     config: AppConfig,
+    indexes_folder: &PathBuf,
 ) -> Result<IndexMap, Box<dyn std::error::Error + Send + Sync>> {
-    let indexes_folder = PathBuf::from(config.indexes_folder);
-    let mut indexes = HashMap::new();
+    let mut indexes: IndexMap = HashMap::new();
 
     if config.reindex {
         if indexes_folder.exists() {
-            fs::remove_dir_all(&indexes_folder)?;
+            fs::remove_dir_all(indexes_folder)?;
             info!(
                 "Deleted existing indexes folder at {}",
                 indexes_folder.display()
@@ -134,6 +215,9 @@ pub fn open_or_create_indexes(
             }
 
             let directory = MmapDirectory::open(&index_path)?;
+
+            // let index = Index::create_in_ram(schema.clone());
+
             let index = Index::open_or_create(directory, schema.clone())?;
 
             indexes.insert(source_config.name, index);

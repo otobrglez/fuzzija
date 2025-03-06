@@ -1,11 +1,7 @@
-mod indexer;
-mod search;
-mod sources;
-mod tpconfig;
-
 use clap::Parser;
+use fuzzija::config::AppConfig;
+use fuzzija::*;
 use log::*;
-use std::cmp::PartialEq;
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
@@ -13,49 +9,28 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 
-#[derive(Parser, Debug, Clone, PartialEq)]
-#[command(author, version, about, long_about = None)]
-struct AppConfig {
-    #[arg(short, long, default_value = "tmp")]
-    storage_folder: String,
-    #[arg(short, long, default_value = "indexes")]
-    indexes_folder: String,
-    #[arg(long, default_value_t = false)]
-    force_download: bool,
-    #[arg(long, default_value_t = false)]
-    reindex: bool,
-    #[arg(long)]
-    query: Option<String>,
-}
-
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     env_logger::init();
-    let cli_config = AppConfig::parse();
+    let app_config = AppConfig::parse();
 
-    let storage_folder_dir = PathBuf::from(&cli_config.storage_folder);
-    if !storage_folder_dir.exists() {
-        fs::create_dir_all(&storage_folder_dir)?;
-    }
-    let indexes_folder_dir = PathBuf::from(&cli_config.indexes_folder);
-    if !indexes_folder_dir.exists() {
-        fs::create_dir_all(&indexes_folder_dir)?;
-    }
+    let (_, indexes_folders) = create_directories(&app_config).unwrap();
 
-    let indexes = Arc::new(Mutex::new(
-        indexer::open_or_create_indexes(cli_config.clone()).unwrap(),
-    ));
+    let indexes = Arc::new(Mutex::new(indexer::open_or_create_indexes(
+        app_config.clone(),
+        &indexes_folders,
+    )?));
 
     let index_readers = search::open_readers(&indexes).await;
 
-    if cli_config.reindex {
+    if app_config.reindex {
         info!("Reindexing.");
         let mut collection_tasks = JoinSet::new();
         for source_config in tpconfig::CONFIG
             .iter()
             .filter(|c| c.kind != tpconfig::SourceKind::Disabled)
         {
-            collection_tasks.spawn(sources::collect(cli_config.clone(), source_config));
+            collection_tasks.spawn(sources::collect(app_config.clone(), source_config));
         }
 
         let mut indexing_tasks = JoinSet::new();
@@ -84,23 +59,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         while let Some(Ok(result)) = indexing_tasks.join_next().await {
             if let Err(e) = result {
-                error!("Indexing failed: {:?}", e);
+                error!("Indexing failed: {}", e);
                 continue;
             }
         }
         info!("Indexing finished.");
     }
 
-    if let Some(query) = cli_config.query {
+    if let Some(query) = app_config.query {
         info!("Searching for \"{}\"", query);
         _ = search::search_indexes(
             &indexes,
             &index_readers,
-            HashSet::from(["Pravne Osebe", "Fizične osebe"]),
+            HashSet::from([
+                "Pravne Osebe",
+                "Fizične osebe",
+                "Poslovni Register Slovenije",
+            ]),
             query,
         )
         .await;
     }
 
     Ok(())
+}
+
+fn create_directories(
+    app_config: &AppConfig,
+) -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error>> {
+    let storage_folder_dir = PathBuf::from(&app_config.storage_folder);
+    let indexes_folder_dir = PathBuf::from(&app_config.indexes_folder);
+
+    if !storage_folder_dir.exists() {
+        fs::create_dir_all(&storage_folder_dir)?;
+    }
+    if !indexes_folder_dir.exists() {
+        fs::create_dir_all(&indexes_folder_dir)?;
+    }
+    Ok((storage_folder_dir.clone(), indexes_folder_dir.clone()))
 }
