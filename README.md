@@ -18,8 +18,8 @@ Options:
 ```
 
 ```bash
-RUST_LOG=info cargo run -- --force-download --reindex
-RUST_LOG=info cargo run -- --query "opalab"
+RUST_LOG=info cargo run -- --force-download --reindex # Download and (re)index the data
+RUST_LOG=info cargo run -- --query "opalab"  # Query all the indexes
 # or build...
 cargo build --relase
 ./target/release/fuzzija -h
