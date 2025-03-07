@@ -37,7 +37,9 @@ pub async fn search_indexes(
     readers: &Arc<Mutex<ReaderMap>>,
     selected_sources: HashSet<SourceName>,
     query: String,
+    maybe_limit: Option<usize>,
 ) -> Result<SearchResults, Box<dyn std::error::Error + Send + Sync>> {
+    let limit = maybe_limit.unwrap_or(10);
     let (indexes_map, readers_map) = (indexes.lock().await, readers.lock().await);
 
     let mut search_results: SearchResults = HashMap::new();
@@ -53,7 +55,9 @@ pub async fn search_indexes(
 
             let query = query_parser.parse_query(&query).unwrap();
             let searcher = reader.searcher();
-            let top_docs = searcher.search(&query, &TopDocs::with_limit(10)).unwrap();
+            let top_docs = searcher
+                .search(&query, &TopDocs::with_limit(limit))
+                .unwrap();
 
             let mut documents: Vec<IndexResult> = Vec::new();
             for (score, doc_address) in top_docs {
