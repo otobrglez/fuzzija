@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::Mutex;
 use tower_http::cors::{Any, CorsLayer};
 
@@ -56,7 +58,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let listener = tokio::net::TcpListener::bind(server_address).await.unwrap();
 
-    axum::serve(listener, app).await.unwrap();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_clone = shutdown.clone();
+
+    // Shutdown handler
+    tokio::spawn(async move {
+        let mut sigterm = signal(SignalKind::terminate()).unwrap();
+        let mut sigint = signal(SignalKind::interrupt()).unwrap();
+
+        tokio::select! {
+            _ = sigterm.recv() => {
+                info!("Received SIGTERM signal");
+                shutdown_clone.store(true, Ordering::SeqCst);
+            }
+            _ = sigint.recv() => {
+                info!("Received SIGINT signal");
+                shutdown_clone.store(true, Ordering::SeqCst);
+            }
+        }
+    });
+
+    // Server
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            while !shutdown.load(Ordering::SeqCst) {
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+            info!("Shutting down server gracefully...");
+        })
+        .await?;
+
+    info!("Server shutdown complete");
 
     Ok(())
 }
