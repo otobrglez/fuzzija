@@ -1,9 +1,28 @@
 use clap::ValueEnum;
 use std::collections::HashSet;
+use std::fmt::Formatter;
 use std::sync::LazyLock;
 use tantivy::schema::{Field, STORED, STRING, Schema, TEXT};
 
-pub type SourceName = &'static str;
+#[derive(Hash, Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
+pub enum SourceName {
+    PravneOsebe,
+    FizicneOsebe,
+    FizicneOsebeDejavnosti,
+    PoslovniRegisterSlovenije,
+}
+
+impl std::fmt::Display for SourceName {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            SourceName::PravneOsebe => "Pravne Osebe",
+            SourceName::FizicneOsebe => "Fizične Osebe",
+            SourceName::FizicneOsebeDejavnosti => "Fizične Osebe (Dejavnosti)",
+            SourceName::PoslovniRegisterSlovenije => "Poslovni Register Slovenije",
+        };
+        write!(f, "{}", name)
+    }
+}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
 pub enum SourceKind {
@@ -14,7 +33,7 @@ pub enum SourceKind {
 }
 
 impl std::fmt::Display for SourceKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let description = match self {
             SourceKind::Disabled => "Disabled",
             SourceKind::PravneOsebe => "Pravne Osebe",
@@ -24,8 +43,6 @@ impl std::fmt::Display for SourceKind {
         write!(f, "{}", description)
     }
 }
-
-// type Position = (usize, usize);
 
 #[derive(Hash, Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Position {
@@ -107,7 +124,7 @@ static PR_SCHEMA: LazyLock<(Schema, HashSet<(Field, Position)>)> = LazyLock::new
 
 pub static CONFIG: [SourceConfig; 4] = [
     SourceConfig {
-        name: "Pravne Osebe",
+        name: SourceName::PravneOsebe,
         kind: SourceKind::PravneOsebe,
         source_url: "https://fu.gov.si/fileadmin/prenosi/DURS_zavezanci_PO.zip",
         zip_file_path: Some("DURS_zavezanci_PO.txt"),
@@ -116,7 +133,7 @@ pub static CONFIG: [SourceConfig; 4] = [
         schema: || Some(&PRAVNE_OSEBE_SCHEMA),
     },
     SourceConfig {
-        name: "Fizične osebe",
+        name: SourceName::FizicneOsebe,
         kind: SourceKind::FizicneOsebe,
         source_url: "https://fu.gov.si/fileadmin/prenosi/DURS_zavezanci_FO.zip",
         zip_file_path: Some("DURS_zavezanci_FO.txt"),
@@ -125,7 +142,7 @@ pub static CONFIG: [SourceConfig; 4] = [
         schema: || Some(&FIZICNE_OSEBE_SCHEMA),
     },
     SourceConfig {
-        name: "Fizične osebe (dejavnosti)",
+        name: SourceName::FizicneOsebeDejavnosti,
         kind: SourceKind::Disabled,
         source_url: "https://fu.gov.si/fileadmin/prenosi/DURS_zavezanci_DEJ.zip",
         zip_file_path: None,
@@ -134,7 +151,7 @@ pub static CONFIG: [SourceConfig; 4] = [
         schema: || None,
     },
     SourceConfig {
-        name: "Poslovni Register Slovenije",
+        name: SourceName::PoslovniRegisterSlovenije,
         kind: SourceKind::PoslovniRegisterSlovenije,
         source_url: "https://podatki.gov.si/dataset/poslovni-register-slovenije",
         zip_file_path: None,
@@ -143,3 +160,11 @@ pub static CONFIG: [SourceConfig; 4] = [
         schema: || Some(&PR_SCHEMA),
     },
 ];
+
+pub fn available_sources() -> Vec<(SourceName, &'static SourceConfig)> {
+    CONFIG
+        .iter()
+        .filter(|c| c.kind != SourceKind::Disabled)
+        .map(|c| (c.name, c))
+        .collect()
+}

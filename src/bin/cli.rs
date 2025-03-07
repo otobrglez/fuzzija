@@ -1,36 +1,23 @@
 use clap::Parser;
 use fuzzija::config::AppConfig;
+use fuzzija::tpconfig::SourceName;
 use fuzzija::*;
 use log::*;
 use std::collections::HashSet;
-use std::fs;
-use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tokio::task::JoinSet;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     env_logger::init();
     let app_config = AppConfig::parse();
-
-    let (_, indexes_folders) = create_directories(&app_config).unwrap();
-
-    let indexes = Arc::new(Mutex::new(indexer::open_or_create_indexes(
-        app_config.clone(),
-        &indexes_folders,
-    )?));
-
-    let index_readers = search::open_readers(&indexes).await;
+    let (index_map, reader_map) = indexer::init(&app_config).await?;
 
     if app_config.reindex {
         info!("Reindexing.");
         let mut collection_tasks = JoinSet::new();
-        for source_config in tpconfig::CONFIG
-            .iter()
-            .filter(|c| c.kind != tpconfig::SourceKind::Disabled)
-        {
-            collection_tasks.spawn(sources::collect(app_config.clone(), source_config));
+        for (_, source_config) in tpconfig::available_sources() {
+            collection_tasks.spawn(sources::collect(app_config.clone(), &source_config));
         }
 
         let mut indexing_tasks = JoinSet::new();
@@ -38,7 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let (source_name, path) = result.unwrap();
             info!("Collected data from {} to {}", source_name, path.display());
 
-            let indexes = Arc::clone(&indexes);
+            let indexes = Arc::clone(&index_map);
             indexing_tasks.spawn(async move {
                 let maybe_index = {
                     let locked_indexes = indexes.lock().await;
@@ -68,33 +55,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     if let Some(query) = app_config.query {
         info!("Searching for \"{}\"", query);
-        _ = search::search_indexes(
-            &indexes,
-            &index_readers,
+        let _out = search::search_indexes(
+            &index_map,
+            &reader_map,
             HashSet::from([
-                "Pravne Osebe",
-                "Fizične osebe",
-                "Poslovni Register Slovenije",
+                SourceName::PravneOsebe,
+                SourceName::FizicneOsebe,
+                SourceName::PoslovniRegisterSlovenije,
             ]),
             query,
         )
-        .await;
+        .await?;
+
+        // println!("{:#?}", out);
     }
 
     Ok(())
-}
-
-fn create_directories(
-    app_config: &AppConfig,
-) -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error>> {
-    let storage_folder_dir = PathBuf::from(&app_config.storage_folder);
-    let indexes_folder_dir = PathBuf::from(&app_config.indexes_folder);
-
-    if !storage_folder_dir.exists() {
-        fs::create_dir_all(&storage_folder_dir)?;
-    }
-    if !indexes_folder_dir.exists() {
-        fs::create_dir_all(&indexes_folder_dir)?;
-    }
-    Ok((storage_folder_dir.clone(), indexes_folder_dir.clone()))
 }

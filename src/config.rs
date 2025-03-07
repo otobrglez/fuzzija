@@ -14,3 +14,12 @@ pub struct AppConfig {
     #[arg(long)]
     pub query: Option<String>,
 }
+
+#[derive(Parser, Debug, Clone, PartialEq)]
+#[command(long_about = None)] // , disable_help_flag = true
+pub struct ServerConfig {
+    #[arg(short, long, default_value_t = 8080)]
+    pub port: usize,
+    #[arg(long, default_value = "0.0.0.0")]
+    pub host: String,
+}

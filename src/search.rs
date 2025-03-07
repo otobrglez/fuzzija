@@ -5,16 +5,14 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
-use tantivy::{Document, IndexReader, ReloadPolicy, TantivyDocument};
+use tantivy::schema::*;
+use tantivy::{Document, IndexReader, ReloadPolicy, Score, TantivyDocument};
 use tokio::sync::Mutex;
 
-type ReaderMap = HashMap<SourceName, IndexReader>;
-
-pub async fn open_readers(
-    indexes: &Arc<Mutex<IndexMap>>,
-) -> Arc<Mutex<HashMap<SourceName, IndexReader>>> {
+pub type ReaderMap = HashMap<SourceName, IndexReader>;
+pub async fn open_readers(indexes: &Arc<Mutex<IndexMap>>) -> Arc<Mutex<ReaderMap>> {
     let locked_indexes = indexes.lock().await;
-    let ind = locked_indexes
+    let index_map: ReaderMap = locked_indexes
         .iter()
         .map(|(&source_name, index)| {
             let reader = index
@@ -26,45 +24,50 @@ pub async fn open_readers(
                 });
             (source_name, reader)
         })
-        .collect::<HashMap<_, _>>();
-    Arc::new(Mutex::new(ind))
+        .collect();
+
+    Arc::new(Mutex::new(index_map))
 }
+
+pub type IndexResult = (Score, NamedFieldDocument, String);
+pub type SearchResults = HashMap<SourceName, Vec<IndexResult>>;
 
 pub async fn search_indexes(
     indexes: &Arc<Mutex<IndexMap>>,
     readers: &Arc<Mutex<ReaderMap>>,
-    source_names: HashSet<SourceName>,
+    selected_sources: HashSet<SourceName>,
     query: String,
-) {
-    let locked_indexes = indexes.lock().await;
-    let locked_readers = readers.lock().await;
+) -> Result<SearchResults, Box<dyn std::error::Error + Send + Sync>> {
+    let (indexes_map, readers_map) = (indexes.lock().await, readers.lock().await);
 
-    for (source_name, index) in locked_indexes
-        .iter()
-        .filter(|(source_name, _)| source_names.contains(*source_name))
-    {
-        for (source_name_2, reader) in locked_readers
-            .iter()
-            .filter(|(source_name_2, _)| source_names.contains(*source_name_2))
+    let mut search_results: SearchResults = HashMap::new();
+    selected_sources.iter().for_each(|source_name| {
+        if let (Some(index), Some(reader)) =
+            (indexes_map.get(source_name), readers_map.get(source_name))
         {
-            if source_names.contains(source_name_2) && source_name == source_name_2 {
-                info!("Searching for {} in {}", query, source_name);
+            info!("Searching in {} for {:#?}", source_name, query);
 
-                let schema = index.schema();
-                let all_fields = schema.fields().map(|(field, _)| field).collect::<Vec<_>>();
+            let schema = index.schema();
+            let all_fields: Vec<Field> = schema.fields().map(|(field, _)| field).collect();
+            let query_parser = QueryParser::for_index(index, all_fields);
 
-                let query_parser = QueryParser::for_index(&index, all_fields);
+            let query = query_parser.parse_query(&query).unwrap();
+            let searcher = reader.searcher();
+            let top_docs = searcher.search(&query, &TopDocs::with_limit(10)).unwrap();
 
-                let query = query_parser.parse_query(&query).unwrap();
-
-                let searcher = reader.searcher();
-                let top_docs = searcher.search(&query, &TopDocs::with_limit(10)).unwrap();
-
-                for (_score, doc_address) in top_docs {
-                    let retrieved_doc: TantivyDocument = searcher.doc(doc_address).unwrap();
-                    println!("{}", retrieved_doc.to_json(&schema));
-                }
+            let mut documents: Vec<IndexResult> = Vec::new();
+            for (score, doc_address) in top_docs {
+                let document: TantivyDocument = searcher.doc(doc_address).unwrap();
+                documents.push((
+                    score,
+                    document.to_named_doc(&schema),
+                    document.to_json(&schema).clone(),
+                ));
             }
+
+            search_results.insert(*source_name, documents.into_iter().collect());
         }
-    }
+    });
+
+    Ok(search_results)
 }

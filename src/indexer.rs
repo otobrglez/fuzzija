@@ -1,5 +1,7 @@
 use crate::config::AppConfig;
-use crate::tpconfig::{CONFIG, Position, SourceConfig, SourceKind, SourceName};
+use crate::search::ReaderMap;
+use crate::tpconfig::*;
+use crate::{search, tpconfig};
 use csv::ReaderBuilder;
 use encoding_rs::WINDOWS_1252;
 use io::Error;
@@ -9,10 +11,12 @@ use std::io::prelude::*;
 use std::io::{BufRead, BufReader, Cursor};
 use std::ops::Deref;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::{fs, io};
 use tantivy::Index;
 use tantivy::directory::MmapDirectory;
 use tantivy::doc;
+use tokio::sync::Mutex;
 
 fn read_by_name_from_zip(
     zip_path: PathBuf,
@@ -29,26 +33,18 @@ fn read_by_name_from_zip(
 fn read_first_csv_from_zip(
     zip_path: PathBuf,
 ) -> Result<BufReader<Cursor<Vec<u8>>>, Box<dyn std::error::Error + Send + Sync>> {
-    // Open the zip file
     let zip_file = std::fs::File::open(zip_path)?;
     let mut archive = zip::ZipArchive::new(zip_file)?;
 
-    // Collect all file names in the archive as owned Strings
     let file_names = (0..archive.len())
         .filter_map(|i| archive.by_index(i).ok().map(|file| file.name().to_string()))
         .collect::<Vec<_>>();
 
-    // Find the first file ending with ".csv"
     if let Some(first_csv) = file_names.iter().find(|name| name.ends_with(".csv")) {
-        // Load the file and return it as a BufReader with a Vec<u8> buffer
         let mut file = archive.by_name(first_csv)?;
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer)?;
 
-        // let reader = DecodeReaderBytes::new(Cursor::new(buffer), WINDOWS_1252);
-
-        // Ok(BufReader::new(Cursor::new(buffer)))
-        // Decode contents from Windows-1252 to UTF-8
         let (decoded, _, had_errors) = WINDOWS_1252.decode(&buffer);
         if had_errors {
             return Err(Box::new(Error::new(
@@ -57,7 +53,6 @@ fn read_first_csv_from_zip(
             )));
         }
 
-        // Return decoded UTF-8 content as BufReader
         Ok(BufReader::new(Cursor::new(
             decoded.into_owned().into_bytes(),
         )))
@@ -180,7 +175,7 @@ pub async fn index_source(
 
 pub type IndexMap = HashMap<SourceName, Index>;
 pub fn open_or_create_indexes(
-    config: AppConfig,
+    config: &AppConfig,
     indexes_folder: &PathBuf,
 ) -> Result<IndexMap, Box<dyn std::error::Error + Send + Sync>> {
     let mut indexes: IndexMap = HashMap::new();
@@ -195,7 +190,7 @@ pub fn open_or_create_indexes(
         }
     }
 
-    for source_config in CONFIG.iter().filter(|c| c.kind != SourceKind::Disabled) {
+    for (_, source_config) in tpconfig::available_sources() {
         if let Some((schema, _)) = (source_config.schema)() {
             info!(
                 "Creating or opening index for {} in {}/{}",
@@ -225,4 +220,35 @@ pub fn open_or_create_indexes(
     }
 
     Ok(indexes)
+}
+
+pub fn create_directories(
+    app_config: &AppConfig,
+) -> Result<(PathBuf, PathBuf), Box<dyn std::error::Error + Send + Sync>> {
+    let storage_folder_dir = PathBuf::from(&app_config.storage_folder);
+    let indexes_folder_dir = PathBuf::from(&app_config.indexes_folder);
+
+    if !storage_folder_dir.exists() {
+        fs::create_dir_all(&storage_folder_dir)?;
+    }
+    if !indexes_folder_dir.exists() {
+        fs::create_dir_all(&indexes_folder_dir)?;
+    }
+    Ok((storage_folder_dir.clone(), indexes_folder_dir.clone()))
+}
+
+pub async fn init(
+    app_config: &AppConfig,
+) -> Result<(Arc<Mutex<IndexMap>>, Arc<Mutex<ReaderMap>>), Box<dyn std::error::Error + Send + Sync>>
+{
+    let (_, indexes_folders) = create_directories(&app_config)?;
+
+    let index_map = Arc::new(Mutex::new(open_or_create_indexes(
+        &app_config,
+        &indexes_folders,
+    )?));
+
+    let reader_map = search::open_readers(&index_map).await;
+
+    Ok((index_map, reader_map))
 }
