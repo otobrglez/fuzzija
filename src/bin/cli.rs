@@ -55,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     if let Some(query) = app_config.query {
         info!("Searching for \"{}\"", query);
-        let _out = search::search_indexes(
+        let search_results = search::search_indexes(
             &index_map,
             &reader_map,
             HashSet::from([
@@ -64,10 +64,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 SourceName::PoslovniRegisterSlovenije,
             ]),
             query,
+            None,
         )
         .await?;
 
-        // println!("{:#?}", out);
+        for (source_name, results) in search_results {
+            println!("{}:", source_name);
+            for (score, _, json_document) in results {
+                println!("\t- {:.2} {}", score, json_document);
+            }
+        }
     }
 
     Ok(())
