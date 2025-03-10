@@ -21,11 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build Rust project
-        run: cargo build --release --verbose
-
-      - name: Run tests
-        run: cargo test --verbose
+      - run: cargo test
 
       - name: Log in to GitHub Container registry
         uses: docker/login-action@v3

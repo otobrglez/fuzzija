@@ -3,7 +3,7 @@ use clap::Parser;
 #[derive(Parser, Debug, Clone, PartialEq)]
 #[command(author, version, about, long_about = None)]
 pub struct AppConfig {
-    #[arg(long, env, default_value = "tmp")]
+    #[arg(long, env, default_value = "raw-data")]
     pub storage_folder: String,
     #[arg(long, env, default_value = "indexes")]
     pub indexes_folder: String,

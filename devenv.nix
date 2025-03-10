@@ -1,7 +1,10 @@
 { pkgs, lib, config, inputs, ... }:
 
 {
-  packages = [ pkgs.git ];
+  packages = [ 
+  	pkgs.git
+	pkgs.git-lfs
+  ];
 
   languages.rust = {
 	enable = true;
